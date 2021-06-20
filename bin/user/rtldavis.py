@@ -83,6 +83,8 @@ import math
 import string
 import threading
 import time
+import paho.mqtt.client as mqtt
+import paho.mqtt.subscribe as subscribe
 
 # Python 2/3 compatiblity
 try:
@@ -138,8 +140,8 @@ if weewx.__version__ < "3":
 #
 DEFAULT_CMD = '/home/pi/work/bin/rtldavis -tf EU' 
 DEBUG_RAIN = 0
-DEBUG_PARSE = 0
-DEBUG_RTLD = 0
+DEBUG_PARSE = 1
+DEBUG_RTLD = 2
 MPH_TO_MPS = 1609.34 / 3600.0 # meter/mile * hour/second
 
 def loader(config_dict, engine):
@@ -417,63 +419,30 @@ class AsyncReader(threading.Thread):
     def stop_running(self):
         self._running = False
 
+def on_message(client, userdata, message):
+        userdata.stderr_queue.put(message.payload)
 
 class ProcManager():
 
     def __init__(self):
-        self._cmd = None
-        self._process = None
         self.stderr_queue = queue.Queue()
-        self.stderr_reader = None
         self.stdout_queue = queue.Queue()
-        self.stdout_reader = None
-
-    def get_pid(self, name):
-        return map(int,check_output(["pidof",name]).split())
+        self.client = mqtt.Client("weewx-rtldavis", userdata=self)
+        self.client.on_message = on_message
 
     def startup(self, cmd, path=None, ld_library_path=None):
-        # kill existiing rtld processes
-        try:
-            pid_list = self.get_pid("rtldavis")
-            for pid in pid_list:
-                os.kill(int(pid), signal.SIGKILL)
-                loginf("rtldavis with pid %s killed" % pid)
-        except:
-            pass
+        self.client.connect("mqtt")
+        self.client.loop_start()
+        self.client.subscribe("home/yard/weather/raw")
 
-        self._cmd = cmd
-        loginf("startup process '%s'" % self._cmd)
-        env = os.environ.copy()
-        if path:
-            env['PATH'] = path + ':' + env['PATH']
-        if ld_library_path:
-            env['LD_LIBRARY_PATH'] = ld_library_path
-        try:
-            self._process = subprocess.Popen(cmd.split(' '),
-                                             env=env,
-                                             stderr=subprocess.PIPE,
-                                             stdout=subprocess.PIPE)
-            self.stderr_reader = AsyncReader(
-                self._process.stderr, self.stderr_queue, 'stderr-thread')
-            self.stderr_reader.start()
-            self.stdout_reader = AsyncReader(
-                self._process.stdout, self.stdout_queue, 'stdout-thread')
-            self.stdout_reader.start()
-        except (OSError, ValueError) as e:
-            raise weewx.WeeWxIOError("failed to start process: %s" % e)
+        # raise weewx.WeeWxIOError("failed to start process: %s" % e)
 
     def shutdown(self):
-        loginf('shutdown process %s' % self._cmd)
-        self.stderr_reader.stop_running()
-        self.stdout_reader.stop_running()
-        # kill existiing rtldavis processes
-        pid_list = self.get_pid("rtldavis")
-        for pid in pid_list:
-            os.kill(int(pid), signal.SIGKILL)
-            loginf("rtldavis with pid %s killed" % pid)
+        self.client.disconnect()
+        self.client.loop_stop()
 
     def running(self):
-        return self._process.poll() is None
+        return True
 
     def get_stdout(self):
         lines = []
