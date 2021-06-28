@@ -419,8 +419,12 @@ class AsyncReader(threading.Thread):
     def stop_running(self):
         self._running = False
 
-def on_message(client, userdata, message):
-        userdata.stderr_queue.put(message.payload)
+def on_rtldavis_message(client, userdata, message):
+    userdata.stderr_queue.put(message.payload)
+
+def on_pressure_message(client, userdata, message):
+    data = "pressure: ".encode("utf8") + message.payload
+    userdata.stderr_queue.put(data)
 
 class ProcManager():
 
@@ -428,12 +432,14 @@ class ProcManager():
         self.stderr_queue = queue.Queue()
         self.stdout_queue = queue.Queue()
         self.client = mqtt.Client("weewx-rtldavis", userdata=self)
-        self.client.on_message = on_message
 
     def startup(self, cmd, path=None, ld_library_path=None):
         self.client.connect("mqtt")
         self.client.loop_start()
         self.client.subscribe("home/yard/weather/raw")
+        self.client.subscribe("home/crawlspace/pressure_abs")
+        self.client.message_callback_add("home/yard/weather/raw", on_rtldavis_message)
+        self.client.message_callback_add("home/crawlspace/pressure_abs", on_pressure_message)
 
         # raise weewx.WeeWxIOError("failed to start process: %s" % e)
 
@@ -476,6 +482,23 @@ class Packet:
     @staticmethod
     def parse_text(ts, payload, lines):
         return None
+
+class PRESSUREPacket(Packet):
+    IDENTIFIER = re.compile("^pressure: [0-9]+.[0-9]+")
+    PATTERN = re.compile('([0-9]+.[0-9]+)')
+
+    @staticmethod
+    def parse_text(self, payload, lines):
+        pkt = dict()
+        m = PRESSUREPacket.PATTERN.search(lines[0])
+        if m:
+            dbg_rtld(2, "pressure: %s" % lines[0])
+            pkt['pressure'] = float(m.group(1)) * 33.86
+            lines.pop(0)
+            return pkt
+        else:
+            dbg_rtld(1, "PRESSUREPacket: unrecognized data: '%s'" % lines[0])
+            lines.pop(0)
 
 
 class DATAPacket(Packet):
@@ -570,7 +593,8 @@ class PacketFactory(object):
     # FIXME: do this with class introspection
     KNOWN_PACKETS = [
         DATAPacket,
-        CHANNELPacket
+        CHANNELPacket,
+        PRESSUREPacket
     ]
 
     @staticmethod
